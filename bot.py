@@ -18,7 +18,7 @@ from telegram.ext import (
 # CONFIG
 # =========================================================
 
-TOKEN = os.environ["BOT_TOKEN"]
+TOKEN = os.environ.get("BOT_TOKEN", "")
 
 ADMIN_ID = 8502501681
 RATE = 125
@@ -132,15 +132,13 @@ def register_user(user_id):
 
 def get_balance(user_id):
     register_user(user_id)
-
     con = db()
     row = con.execute(
         "SELECT balance FROM users WHERE user_id = ?",
         (user_id,),
     ).fetchone()
     con.close()
-
-    return float(row["balance"])
+    return float(row["balance"]) if row else 0.0
 
 
 # =========================================================
@@ -148,7 +146,6 @@ def get_balance(user_id):
 # =========================================================
 
 class HealthHandler(BaseHTTPRequestHandler):
-
     def do_GET(self):
         self.send_response(200)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -184,19 +181,13 @@ def home_keyboard(user_id):
         [InlineKeyboardButton("📞 Support", callback_data="support")],
         [InlineKeyboardButton("👤 Profile", callback_data="profile")],
     ]
-
     if user_id == ADMIN_ID:
-        buttons.append([
-            InlineKeyboardButton("🔐 Admin Panel", callback_data="admin")
-        ])
-
+        buttons.append([InlineKeyboardButton("🔐 Admin Panel", callback_data="admin")])
     return InlineKeyboardMarkup(buttons)
 
 
 def back_home():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 Back", callback_data="home")]
-    ])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="home")]])
 
 
 def admin_keyboard():
@@ -212,13 +203,11 @@ def admin_keyboard():
 
 
 def cancel_keyboard(callback="home"):
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("❌ Cancel", callback_data=callback)]
-    ])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=callback)]])
 
 
 # =========================================================
-# COMMON TEXT
+# TEXT TEMPLATES
 # =========================================================
 
 def home_text():
@@ -233,14 +222,13 @@ def home_text():
 
 
 # =========================================================
-# START / COMMANDS
+# COMMAND HANDLERS
 # =========================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     register_user(user_id)
     context.user_data.clear()
-
     await update.message.reply_text(
         home_text(),
         reply_markup=home_keyboard(user_id),
@@ -278,140 +266,88 @@ async def command_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("❌ Access denied.")
         return
-
     context.user_data.clear()
-
     await update.message.reply_text(
-        "🔐 ADMIN PANEL\n\n"
-        "Choose an option:",
+        "🔐 ADMIN PANEL\n\nChoose an option:",
         reply_markup=admin_keyboard(),
     )
 
 
 # =========================================================
-# HOME
+# BALANCE & PROFILE
 # =========================================================
 
-async def show_home_query(query):
-    await query.edit_message_text(
-        home_text(),
-        reply_markup=home_keyboard(query.from_user.id),
+async def show_balance_message(user_id, message_or_query, is_query=False):
+    balance = get_balance(user_id)
+    text = (
+        "💰 MY BALANCE\n\n"
+        "━━━━━━━━━━━━━━━━\n"
+        f"💵 USD: ${balance:.2f}\n"
+        f"🇧🇩 BDT: ৳{balance * RATE:.2f}\n"
+        "━━━━━━━━━━━━━━━━"
     )
+    if is_query:
+        await message_or_query.edit_message_text(text, reply_markup=back_home())
+    else:
+        await message_or_query.reply_text(text, reply_markup=back_home())
 
 
-# =========================================================
-# BALANCE
-# =========================================================
-
-async def show_balance_message(user_id, message):
+async def show_profile_message(user, message_or_query, is_query=False):
+    user_id = user.id
+    register_user(user_id)
     balance = get_balance(user_id)
 
-    await message.reply_text(
-        "💰 MY BALANCE\n\n"
+    con = db()
+    order_count = con.execute("SELECT COUNT(*) FROM orders WHERE user_id = ?", (user_id,)).fetchone()[0]
+    con.close()
+
+    username = f"@{user.username}" if user.username else "None"
+    text = (
+        "👤 PROFILE\n\n"
         "━━━━━━━━━━━━━━━━\n"
-        f"💵 USD: ${balance:.2f}\n"
-        f"🇧🇩 BDT: ৳{balance * RATE:.2f}\n"
-        "━━━━━━━━━━━━━━━━",
-        reply_markup=back_home(),
+        f"🆔 User ID: {user_id}\n"
+        f"👤 Username: {username}\n"
+        f"💰 Balance: ${balance:.2f}\n"
+        f"📦 Orders: {order_count}\n"
+        "━━━━━━━━━━━━━━━━"
     )
-
-
-async def balance_query(query):
-    balance = get_balance(query.from_user.id)
-
-    await query.edit_message_text(
-        "💰 MY BALANCE\n\n"
-        "━━━━━━━━━━━━━━━━\n"
-        f"💵 USD: ${balance:.2f}\n"
-        f"🇧🇩 BDT: ৳{balance * RATE:.2f}\n"
-        "━━━━━━━━━━━━━━━━",
-        reply_markup=back_home(),
-    )
+    if is_query:
+        await message_or_query.edit_message_text(text, reply_markup=back_home())
+    else:
+        await message_or_query.reply_text(text, reply_markup=back_home())
 
 
 # =========================================================
-# PRODUCTS
+# PRODUCTS & BUY
 # =========================================================
 
 async def products_query(query):
     con = db()
-
-    rows = con.execute("""
-        SELECT id, name, price, stock
-        FROM products
-        WHERE stock > 0
-        ORDER BY id DESC
-    """).fetchall()
-
+    rows = con.execute("SELECT id, name, price, stock FROM products WHERE stock > 0 ORDER BY id DESC").fetchall()
     con.close()
 
     if not rows:
-        await query.edit_message_text(
-            "📦 AVAILABLE PRODUCTS\n\n"
-            "❌ No products available.",
-            reply_markup=back_home(),
-        )
+        await query.edit_message_text("📦 AVAILABLE PRODUCTS\n\n❌ No products available.", reply_markup=back_home())
         return
 
-    buttons = []
-
-    for row in rows:
-        buttons.append([
-            InlineKeyboardButton(
-                f"📦 {row['name']} — ${row['price']:.2f}",
-                callback_data=f"product:{row['id']}",
-            )
-        ])
-
-    buttons.append([
-        InlineKeyboardButton("🔙 Back", callback_data="home")
-    ])
-
-    await query.edit_message_text(
-        "📦 AVAILABLE PRODUCTS\n\n"
-        "👇 Select a product:",
-        reply_markup=InlineKeyboardMarkup(buttons),
-    )
+    buttons = [[InlineKeyboardButton(f"📦 {r['name']} — ${r['price']:.2f}", callback_data=f"product:{r['id']}")] for r in rows]
+    buttons.append([InlineKeyboardButton("🔙 Back", callback_data="home")])
+    await query.edit_message_text("📦 AVAILABLE PRODUCTS\n\n👇 Select a product:", reply_markup=InlineKeyboardMarkup(buttons))
 
 
 async def product_details_query(query, product_id):
-    try:
-        product_id = int(product_id)
-    except ValueError:
-        await query.edit_message_text(
-            "❌ Invalid product.",
-            reply_markup=back_home(),
-        )
-        return
-
     con = db()
-
-    row = con.execute("""
-        SELECT id, name, details, price, stock
-        FROM products
-        WHERE id = ?
-    """, (product_id,)).fetchone()
-
+    row = con.execute("SELECT id, name, details, price, stock FROM products WHERE id = ?", (product_id,)).fetchone()
     con.close()
 
-    if row is None:
-        await query.edit_message_text(
-            "❌ Product not found.",
-            reply_markup=back_home(),
-        )
+    if not row:
+        await query.edit_message_text("❌ Product not found.", reply_markup=back_home())
         return
 
-    keyboard = [
-        [InlineKeyboardButton(
-            "🛒 Buy Now",
-            callback_data=f"buy:{row['id']}",
-        )],
-        [InlineKeyboardButton(
-            "🔙 Products",
-            callback_data="products",
-        )],
-    ]
-
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🛒 Buy Now", callback_data=f"buy:{row['id']}")],
+        [InlineKeyboardButton("🔙 Products", callback_data="products")],
+    ])
     await query.edit_message_text(
         "📦 PRODUCT DETAILS\n\n"
         "━━━━━━━━━━━━━━━━\n"
@@ -421,44 +357,22 @@ async def product_details_query(query, product_id):
         f"🇧🇩 Price: ৳{row['price'] * RATE:.2f}\n"
         f"📊 Stock: {row['stock']}\n"
         "━━━━━━━━━━━━━━━━",
-        reply_markup=InlineKeyboardMarkup(keyboard),
+        reply_markup=keyboard,
     )
 
 
-# =========================================================
-# BUY
-# =========================================================
-
 async def buy_product_query(query, product_id):
-    try:
-        product_id = int(product_id)
-    except ValueError:
-        await query.edit_message_text(
-            "❌ Invalid product.",
-            reply_markup=back_home(),
-        )
-        return
-
     user_id = query.from_user.id
     register_user(user_id)
 
     con = db()
-
     try:
         con.execute("BEGIN IMMEDIATE")
+        product = con.execute("SELECT id, name, price, stock FROM products WHERE id = ?", (product_id,)).fetchone()
 
-        product = con.execute("""
-            SELECT id, name, price, stock
-            FROM products
-            WHERE id = ?
-        """, (product_id,)).fetchone()
-
-        if product is None:
+        if not product:
             con.rollback()
-            await query.edit_message_text(
-                "❌ Product not found.",
-                reply_markup=back_home(),
-            )
+            await query.edit_message_text("❌ Product not found.", reply_markup=back_home())
             return
 
         if product["stock"] <= 0:
@@ -466,29 +380,17 @@ async def buy_product_query(query, product_id):
             await query.edit_message_text(
                 "❌ Product is out of stock.",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton(
-                        "🔙 Products",
-                        callback_data="products",
-                    )],
-                    [InlineKeyboardButton(
-                        "🏠 Home",
-                        callback_data="home",
-                    )],
+                    [InlineKeyboardButton("🔙 Products", callback_data="products")],
+                    [InlineKeyboardButton("🏠 Home", callback_data="home")],
                 ]),
             )
             return
 
-        user = con.execute("""
-            SELECT balance
-            FROM users
-            WHERE user_id = ?
-        """, (user_id,)).fetchone()
-
+        user = con.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,)).fetchone()
         balance = float(user["balance"])
 
         if balance < float(product["price"]):
             con.rollback()
-
             await query.edit_message_text(
                 "❌ INSUFFICIENT BALANCE\n\n"
                 "━━━━━━━━━━━━━━━━\n"
@@ -498,166 +400,94 @@ async def buy_product_query(query, product_id):
                 "━━━━━━━━━━━━━━━━\n\n"
                 "Please deposit first.",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton(
-                        "💵 Deposit",
-                        callback_data="deposit",
-                    )],
-                    [InlineKeyboardButton(
-                        "🔙 Products",
-                        callback_data="products",
-                    )],
+                    [InlineKeyboardButton("💵 Deposit", callback_data="deposit")],
+                    [InlineKeyboardButton("🔙 Products", callback_data="products")],
                 ]),
             )
             return
 
-        con.execute("""
-            UPDATE users
-            SET balance = balance - ?
-            WHERE user_id = ?
-        """, (float(product["price"]), user_id))
-
-        con.execute("""
-            UPDATE products
-            SET stock = stock - 1
-            WHERE id = ? AND stock > 0
-        """, (product_id,))
-
-        cur = con.execute("""
-            INSERT INTO orders(
-                user_id,
-                product_id,
-                price,
-                status,
-                created_at
-            )
-            VALUES(?, ?, ?, 'Pending', ?)
-        """, (
-            user_id,
-            product_id,
-            float(product["price"]),
-            now(),
-        ))
-
+        con.execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (float(product["price"]), user_id))
+        con.execute("UPDATE products SET stock = stock - 1 WHERE id = ? AND stock > 0", (product_id,))
+        cur = con.execute(
+            "INSERT INTO orders(user_id, product_id, price, status, created_at) VALUES(?, ?, ?, 'Pending', ?)",
+            (user_id, product_id, float(product["price"]), now()),
+        )
         order_id = cur.lastrowid
-
         con.commit()
 
-    except Exception:
-        con.rollback()
-
         await query.edit_message_text(
-            "❌ Purchase failed. Please try again.",
+            "✅ ORDER CREATED\n\n"
+            "━━━━━━━━━━━━━━━━\n"
+            f"🆔 Order: #{order_id}\n"
+            f"📦 Product: {product['name']}\n"
+            f"💵 Price: ${product['price']:.2f}\n"
+            "📌 Status: Pending\n"
+            "━━━━━━━━━━━━━━━━",
             reply_markup=back_home(),
         )
-        return
-
+    except Exception:
+        con.rollback()
+        await query.edit_message_text("❌ Purchase failed. Please try again.", reply_markup=back_home())
     finally:
         con.close()
 
-    await query.edit_message_text(
-        "✅ ORDER CREATED\n\n"
-        "━━━━━━━━━━━━━━━━\n"
-        f"🆔 Order: #{order_id}\n"
-        f"📦 Product: {product['name']}\n"
-        f"💵 Price: ${product['price']:.2f}\n"
-        "📌 Status: Pending\n"
-        "━━━━━━━━━━━━━━━━",
-        reply_markup=back_home(),
-    )
-
 
 # =========================================================
-# ORDERS
+# ORDERS & REFUND
 # =========================================================
 
-async def show_orders(user_id, message):
+async def show_orders(user_id, message_or_query, is_query=False):
     con = db()
-
     rows = con.execute("""
-        SELECT
-            orders.id,
-            products.name,
-            orders.price,
-            orders.status
+        SELECT orders.id, products.name, orders.price, orders.status
         FROM orders
         JOIN products ON products.id = orders.product_id
         WHERE orders.user_id = ?
         ORDER BY orders.id DESC
     """, (user_id,)).fetchall()
-
     con.close()
 
     if not rows:
-        await message.reply_text(
-            "🧾 MY ORDERS\n\n"
-            "❌ No orders found.",
-            reply_markup=back_home(),
-        )
-        return
+        text = "🧾 MY ORDERS\n\n❌ No orders found."
+    else:
+        text = "🧾 MY ORDERS\n\n"
+        for row in rows:
+            text += f"━━━━━━━━━━━━━━━━\n🆔 #{row['id']}\n📦 {row['name']}\n💵 ${row['price']:.2f}\n📌 {row['status']}\n"
 
-    text = "🧾 MY ORDERS\n\n"
-
-    for row in rows:
-        text += (
-            "━━━━━━━━━━━━━━━━\n"
-            f"🆔 #{row['id']}\n"
-            f"📦 {row['name']}\n"
-            f"💵 ${row['price']:.2f}\n"
-            f"📌 {row['status']}\n"
-        )
-
-    await message.reply_text(
-        text,
-        reply_markup=back_home(),
-    )
+    if is_query:
+        await message_or_query.edit_message_text(text, reply_markup=back_home())
+    else:
+        await message_or_query.reply_text(text, reply_markup=back_home())
 
 
-async def orders_query(query):
-    user_id = query.from_user.id
-
+async def show_refund_message(user_id, message_or_query, is_query=False):
     con = db()
-
     rows = con.execute("""
-        SELECT
-            orders.id,
-            products.name,
-            orders.price,
-            orders.status
+        SELECT orders.id, products.name, orders.price
         FROM orders
         JOIN products ON products.id = orders.product_id
-        WHERE orders.user_id = ?
+        WHERE orders.user_id = ? AND orders.id NOT IN (SELECT order_id FROM refunds)
         ORDER BY orders.id DESC
     """, (user_id,)).fetchall()
-
     con.close()
 
     if not rows:
-        await query.edit_message_text(
-            "🧾 MY ORDERS\n\n"
-            "❌ No orders found.",
-            reply_markup=back_home(),
-        )
-        return
+        text = "↩️ REFUND REQUEST\n\n❌ No eligible orders available for refund."
+        keyboard = back_home()
+    else:
+        text = "↩️ REFUND REQUEST\n\nSelect an order to request refund:"
+        buttons = [[InlineKeyboardButton(f"Order #{r['id']} - {r['name']} (${r['price']:.2f})", callback_data=f"req_refund:{r['id']}")] for r in rows]
+        buttons.append([InlineKeyboardButton("🔙 Back", callback_data="home")])
+        keyboard = InlineKeyboardMarkup(buttons)
 
-    text = "🧾 MY ORDERS\n\n"
-
-    for row in rows:
-        text += (
-            "━━━━━━━━━━━━━━━━\n"
-            f"🆔 #{row['id']}\n"
-            f"📦 {row['name']}\n"
-            f"💵 ${row['price']:.2f}\n"
-            f"📌 {row['status']}\n"
-        )
-
-    await query.edit_message_text(
-        text,
-        reply_markup=back_home(),
-    )
+    if is_query:
+        await message_or_query.edit_message_text(text, reply_markup=keyboard)
+    else:
+        await message_or_query.reply_text(text, reply_markup=keyboard)
 
 
 # =========================================================
-# DEPOSIT
+# DEPOSIT & WITHDRAW FLOWS
 # =========================================================
 
 def deposit_keyboard():
@@ -670,91 +500,84 @@ def deposit_keyboard():
     ])
 
 
-async def show_deposit_message(message):
-    await message.reply_text(
-        "💵 DEPOSIT\n\n"
-        "Select payment method:",
-        reply_markup=deposit_keyboard(),
-    )
-
-
-async def deposit_query(query):
-    await query.edit_message_text(
-        "💵 DEPOSIT\n\n"
-        "Select payment method:",
-        reply_markup=deposit_keyboard(),
-    )
+async def show_deposit_message(message_or_query, is_query=False):
+    text = "💵 DEPOSIT\n\nSelect payment method:"
+    if is_query:
+        await message_or_query.edit_message_text(text, reply_markup=deposit_keyboard())
+    else:
+        await message_or_query.reply_text(text, reply_markup=deposit_keyboard())
 
 
 async def payment_query(query, method):
     method = method.lower()
-
     if method == "bkash":
-        title = "📱 bKash DEPOSIT"
-        info = f"Send Money: {BKASH}"
-
+        title, info = "📱 bKash DEPOSIT", f"Send Money: {BKASH}"
     elif method == "nagad":
-        title = "📱 Nagad DEPOSIT"
-        info = f"Send Money: {NAGAD}"
-
+        title, info = "📱 Nagad DEPOSIT", f"Send Money: {NAGAD}"
     elif method == "bybit":
-        title = "💳 Bybit DEPOSIT"
-        info = f"UID: {BYBIT_UID}"
-
+        title, info = "💳 Bybit DEPOSIT", f"UID: {BYBIT_UID}"
     elif method == "binance":
-        title = "🪙 Binance DEPOSIT"
-        info = f"UID: {BINANCE_UID}"
-
+        title, info = "🪙 Binance DEPOSIT", f"UID: {BINANCE_UID}"
     else:
-        await query.edit_message_text(
-            "❌ Invalid payment method.",
-            reply_markup=back_home(),
-        )
+        await query.edit_message_text("❌ Invalid payment method.", reply_markup=back_home())
         return
 
-    query_text = (
-        f"{title}\n\n"
-        "━━━━━━━━━━━━━━━━\n"
-        f"{info}\n"
-        "━━━━━━━━━━━━━━━━\n\n"
-        "After sending payment, submit your amount and transaction ID."
-    )
+    text = f"{title}\n\n━━━━━━━━━━━━━━━━\n{info}\n━━━━━━━━━━━━━━━━\n\nAfter sending payment, submit your amount and transaction ID."
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📝 Submit Deposit", callback_data=f"deposit_submit:{method}")],
+        [InlineKeyboardButton("🔙 Deposit Methods", callback_data="deposit")],
+    ])
+    await query.edit_message_text(text, reply_markup=keyboard)
 
-    keyboard = [
-        [InlineKeyboardButton(
-            "📝 Submit Deposit",
-            callback_data=f"deposit_submit:{method}",
-        )],
-        [InlineKeyboardButton(
-            "🔙 Deposit Methods",
-            callback_data="deposit",
-        )],
-    ]
-
-    await query.edit_message_text(
-        query_text,
-        reply_markup=InlineKeyboardMarkup(keyboard),
-    )
-
-
-async def start_deposit_submission(query, context, method):
-    context.user_data.clear()
-    context.user_data["deposit_method"] = method
-    context.user_data["flow"] = "deposit_amount"
-
-    await query.edit_message_text(
-        "💵 DEPOSIT REQUEST\n\n"
-        "Step 1/2\n\n"
-        "💵 Enter amount in USD.\n\n"
-        "Example: 10",
-        reply_markup=cancel_keyboard("deposit"),
-    )
-
-
-# =========================================================
-# WITHDRAW
-# =========================================================
 
 def withdraw_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButt
+        [InlineKeyboardButton("📱 bKash", callback_data="w_pay:bkash")],
+        [InlineKeyboardButton("📱 Nagad", callback_data="w_pay:nagad")],
+        [InlineKeyboardButton("💳 Bybit", callback_data="w_pay:bybit")],
+        [InlineKeyboardButton("🪙 Binance", callback_data="w_pay:binance")],
+        [InlineKeyboardButton("🔙 Back", callback_data="home")],
+    ])
+
+
+async def show_withdraw_message(message_or_query, is_query=False):
+    text = "💸 WITHDRAW\n\nSelect withdrawal method:"
+    if is_query:
+        await message_or_query.edit_message_text(text, reply_markup=withdraw_keyboard())
+    else:
+        await message_or_query.reply_text(text, reply_markup=withdraw_keyboard())
+
+
+# =========================================================
+# ADMIN CONTROL FUNCTIONS
+# =========================================================
+
+async def admin_deposit_requests(query):
+    con = db()
+    rows = con.execute("SELECT id, user_id, method, amount, transaction_id, status FROM deposits WHERE status = 'Pending' ORDER BY id ASC").fetchall()
+    con.close()
+
+    if not rows:
+        await query.edit_message_text("💵 DEPOSIT REQUESTS\n\n❌ No pending deposits.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="admin")]]))
+        return
+
+    await query.edit_message_text("💵 PENDING DEPOSIT REQUESTS:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="admin")]]))
+    for r in rows:
+        text = (
+            f"🆔 Deposit ID: #{r['id']}\n"
+            f"👤 User ID: {r['user_id']}\n"
+            f"💳 Method: {r['method'].upper()}\n"
+            f"💵 Amount: ${r['amount']:.2f}\n"
+            f"🧾 TxID: {r['transaction_id']}\n"
+            f"📌 Status: {r['status']}"
+        )
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Approve", callback_data=f"adm_dep_app:{r['id']}"),
+                InlineKeyboardButton("❌ Reject", callback_data=f"adm_dep_rej:{r['id']}")
+            ]
+        ])
+        await query.message.reply_text(text, reply_markup=kb)
+
+
+# =====================================
