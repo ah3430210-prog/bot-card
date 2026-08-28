@@ -2,41 +2,46 @@ import os
 import sqlite3
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
     CallbackQueryHandler,
+    MessageHandler,
     ContextTypes,
+    filters,
 )
 
 TOKEN = os.environ["BOT_TOKEN"]
 
+ADMIN_ID = 8502501681
+RATE = 125
 PORT = int(os.environ.get("PORT", 10000))
 
-USD_TO_BDT = 125
+BKASH = "01326630510"
+NAGAD = "01326630510"
+BYBIT_UID = "531771545"
+BINANCE_UID = "780473636"
 
-# Admin Telegram numeric ID
-ADMIN_ID = 8502501681
+SUPPORT = "https://t.me/abirhasan6738"
 
-DB_FILE = "botcard.db"
+DB = "botcard.db"
 
 
 # =========================
 # DATABASE
 # =========================
 
-def get_db():
-    return sqlite3.connect(DB_FILE)
+def db():
+    return sqlite3.connect(DB)
 
 
-def setup_database():
-    con = get_db()
+def setup():
+    con = db()
     cur = con.cursor()
 
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS users (
+        CREATE TABLE IF NOT EXISTS users(
             user_id INTEGER PRIMARY KEY,
             username TEXT,
             balance REAL DEFAULT 0
@@ -44,38 +49,43 @@ def setup_database():
     """)
 
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS products (
+        CREATE TABLE IF NOT EXISTS products(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            price REAL NOT NULL,
-            stock INTEGER DEFAULT 0,
-            description TEXT DEFAULT ''
+            name TEXT,
+            price REAL,
+            stock INTEGER,
+            description TEXT
         )
     """)
 
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS orders (
+        CREATE TABLE IF NOT EXISTS orders(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
             product_id INTEGER,
             price REAL,
-            status TEXT DEFAULT 'Pending'
+            status TEXT DEFAULT 'Pending',
+            details TEXT DEFAULT '',
+            approved_at REAL DEFAULT 0,
+            expires_at REAL DEFAULT 0,
+            refunded INTEGER DEFAULT 0
         )
     """)
 
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS deposits (
+        CREATE TABLE IF NOT EXISTS deposits(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
             amount REAL,
             method TEXT,
-            trx_id TEXT,
+            trx TEXT,
+            screenshot TEXT,
             status TEXT DEFAULT 'Pending'
         )
     """)
 
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS withdrawals (
+        CREATE TABLE IF NOT EXISTS withdrawals(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
             amount REAL,
@@ -85,16 +95,26 @@ def setup_database():
         )
     """)
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS refunds(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER,
+            user_id INTEGER,
+            amount REAL,
+            status TEXT DEFAULT 'Pending'
+        )
+    """)
+
     con.commit()
     con.close()
 
 
-def register_user(user):
-    con = get_db()
+def register(user):
+    con = db()
     cur = con.cursor()
 
     cur.execute(
-        "INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)",
+        "INSERT OR IGNORE INTO users(user_id,username) VALUES(?,?)",
         (user.id, user.username or "")
     )
 
@@ -108,74 +128,42 @@ def register_user(user):
 
 
 # =========================
-# RENDER HEALTH SERVER
+# RENDER WEB SERVER
 # =========================
 
-class HealthHandler(BaseHTTPRequestHandler):
+class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"BOT CARD is running")
+        self.wfile.write(b"BOT CARD is live")
 
-    def log_message(self, format, *args):
+    def log_message(self, *args):
         pass
 
 
-def run_web_server():
-    server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
-    server.serve_forever()
+def web_server():
+    HTTPServer(
+        ("0.0.0.0", PORT),
+        Handler
+    ).serve_forever()
 
 
 # =========================
 # MAIN MENU
 # =========================
 
-def main_menu():
+def menu():
 
     return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(
-                "💳 Buy Card",
-                callback_data="products"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "💵 Deposit",
-                callback_data="deposit"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "💰 My Balance",
-                callback_data="balance"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "🧾 My Orders",
-                callback_data="orders"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "💸 Withdraw",
-                callback_data="withdraw"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "📞 Support",
-                callback_data="support"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "👤 Profile",
-                callback_data="profile"
-            )
-        ],
+        [InlineKeyboardButton("💳 Buy Card", callback_data="products")],
+        [InlineKeyboardButton("💵 Deposit", callback_data="deposit")],
+        [InlineKeyboardButton("💰 My Balance", callback_data="balance")],
+        [InlineKeyboardButton("🧾 My Orders", callback_data="orders")],
+        [InlineKeyboardButton("💸 Withdraw", callback_data="withdraw")],
+        [InlineKeyboardButton("↩️ Refund", callback_data="refund")],
+        [InlineKeyboardButton("📞 Support", callback_data="support")],
+        [InlineKeyboardButton("👤 Profile", callback_data="profile")],
     ])
 
 
@@ -185,44 +173,14 @@ def main_menu():
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    register_user(update.effective_user)
+    register(update.effective_user)
 
     await update.message.reply_text(
         "💳 BOT CARD\n\n"
         "Welcome to BOT CARD!\n"
         "👤 BY ABIR\n\n"
-        f"💱 Rate: 1 USD = {USD_TO_BDT} BDT\n\n"
-        "Choose an option:",
-        reply_markup=main_menu()
-    )
-
-
-# =========================
-# BALANCE
-# =========================
-
-async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    register_user(update.effective_user)
-
-    con = get_db()
-    cur = con.cursor()
-
-    cur.execute(
-        "SELECT balance FROM users WHERE user_id=?",
-        (update.effective_user.id,)
-    )
-
-    row = cur.fetchone()
-
-    con.close()
-
-    amount = row[0] if row else 0
-
-    await update.message.reply_text(
-        "💰 MY BALANCE\n\n"
-        f"USD: ${amount:.2f}\n"
-        f"BDT: ৳{amount * USD_TO_BDT:.2f}"
+        f"💱 Rate: 1 USD = {RATE} BDT",
+        reply_markup=menu()
     )
 
 
@@ -230,453 +188,304 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # PRODUCTS
 # =========================
 
-async def products(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_products(query):
 
-    register_user(update.effective_user)
-
-    con = get_db()
+    con = db()
     cur = con.cursor()
 
     cur.execute("""
-        SELECT id, name, price, stock
+        SELECT id,name,price,stock
         FROM products
         WHERE stock > 0
         ORDER BY id DESC
     """)
 
     rows = cur.fetchall()
-
     con.close()
 
     if not rows:
-
-        await update.message.reply_text(
-            "💳 BUY CARD\n\n"
-            "No products available right now."
+        await query.edit_message_text(
+            "💳 BUY CARD\n\nNo products available."
         )
-
         return
 
     keyboard = []
 
-    for product_id, name, price, stock in rows:
+    for pid, name, price, stock in rows:
 
         keyboard.append([
             InlineKeyboardButton(
                 f"💳 {name} — ${price:.2f}",
-                callback_data=f"product_{product_id}"
+                callback_data=f"view_{pid}"
             )
         ])
 
-    await update.message.reply_text(
-        "💳 AVAILABLE PRODUCTS\n\n"
-        f"💱 1 USD = {USD_TO_BDT} BDT",
+    await query.edit_message_text(
+        f"💳 AVAILABLE PRODUCTS\n\n"
+        f"💱 1 USD = {RATE} BDT",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 
 # =========================
-# ORDERS
+# ORDER
 # =========================
 
-async def orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def create_order(query, product_id):
 
-    con = get_db()
+    con = db()
     cur = con.cursor()
 
-    cur.execute("""
-        SELECT orders.id,
-               products.name,
-               orders.price,
-               orders.status
-        FROM orders
-        JOIN products
-        ON products.id = orders.product_id
-        WHERE orders.user_id=?
-        ORDER BY orders.id DESC
-    """, (update.effective_user.id,))
+    cur.execute(
+        "SELECT name,price,stock FROM products WHERE id=?",
+        (product_id,)
+    )
 
-    rows = cur.fetchall()
+    product = cur.fetchone()
 
-    con.close()
-
-    if not rows:
-
-        await update.message.reply_text(
-            "🧾 MY ORDERS\n\n"
-            "No orders found."
-        )
-
+    if not product:
+        con.close()
+        await query.edit_message_text("❌ Product not found.")
         return
 
-    text = "🧾 MY ORDERS\n\n"
+    name, price, stock = product
 
-    for order_id, name, price, status in rows:
+    if stock <= 0:
+        con.close()
+        await query.edit_message_text("❌ Out of stock.")
+        return
 
-        text += (
-            f"Order #{order_id}\n"
-            f"Product: {name}\n"
+    cur.execute(
+        """
+        SELECT balance FROM users WHERE user_id=?
+        """,
+        (query.from_user.id,)
+    )
+
+    balance = cur.fetchone()[0]
+
+    if balance < price:
+        con.close()
+
+        await query.edit_message_text(
+            f"❌ Insufficient balance.\n\n"
             f"Price: ${price:.2f}\n"
-            f"Status: {status}\n\n"
+            f"Balance: ${balance:.2f}"
         )
+        return
 
-    await update.message.reply_text(text)
+    cur.execute(
+        """
+        UPDATE users
+        SET balance=balance-?
+        WHERE user_id=?
+        """,
+        (price, query.from_user.id)
+    )
+
+    cur.execute(
+        """
+        INSERT INTO orders(user_id,product_id,price)
+        VALUES(?,?,?)
+        """,
+        (query.from_user.id, product_id, price)
+    )
+
+    order_id = cur.lastrowid
+
+    con.commit()
+    con.close()
+
+    await query.edit_message_text(
+        "✅ ORDER CREATED\n\n"
+        f"Order ID: #{order_id}\n"
+        f"Product: {name}\n"
+        f"Price: ${price:.2f}\n\n"
+        "⏳ Waiting for admin approval."
+    )
+
+    try:
+        await query.bot.send_message(
+            ADMIN_ID,
+            "📦 NEW ORDER\n\n"
+            f"Order ID: #{order_id}\n"
+            f"User ID: {query.from_user.id}\n"
+            f"Product: {name}\n"
+            f"Price: ${price:.2f}",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "✅ Approve",
+                        callback_data=f"approve_{order_id}"
+                    ),
+                    InlineKeyboardButton(
+                        "❌ Decline",
+                        callback_data=f"decline_{order_id}"
+                    )
+                ]
+            ])
+        )
+    except Exception:
+        pass
 
 
 # =========================
 # DEPOSIT
 # =========================
 
-async def deposit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def deposit_menu(query):
 
-    await update.message.reply_text(
+    keyboard = [
+        [InlineKeyboardButton("📱 bKash", callback_data="dep_bkash")],
+        [InlineKeyboardButton("📱 Nagad", callback_data="dep_nagad")],
+        [InlineKeyboardButton("💳 Bybit", callback_data="dep_bybit")],
+        [InlineKeyboardButton("🪙 Binance", callback_data="dep_binance")],
+    ]
+
+    await query.edit_message_text(
         "💵 DEPOSIT\n\n"
-        "Deposit system requires admin approval.\n\n"
-        "📞 Support: @abirhasan6738"
+        "Choose payment method:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
+
+
+async def deposit_method(query, method):
+
+    if method == "bkash":
+        text = (
+            "📱 bKash Deposit\n\n"
+            "Send Money to:\n"
+            f"`{BKASH}`\n\n"
+            "তারপর /deposit_request command ব্যবহার করো।"
+        )
+
+    elif method == "nagad":
+        text = (
+            "📱 Nagad Deposit\n\n"
+            "Send Money to:\n"
+            f"`{NAGAD}`\n\n"
+            "তারপর /deposit_request command ব্যবহার করো।"
+        )
+
+    elif method == "bybit":
+        text = (
+            "💳 Bybit Deposit\n\n"
+            "UID:\n"
+            f"`{BYBIT_UID}`\n\n"
+            "তারপর /deposit_request command ব্যবহার করো।"
+        )
+
+    else:
+        text = (
+            "🪙 Binance Deposit\n\n"
+            "UID:\n"
+            f"`{BINANCE_UID}`\n\n"
+            "তারপর /deposit_request command ব্যবহার করো।"
+        )
+
+    await query.edit_message_text(text)
 
 
 # =========================
 # WITHDRAW
 # =========================
 
-async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    await update.message.reply_text(
-        "💸 WITHDRAW\n\n"
-        "Withdraw system requires admin approval.\n\n"
-        "📞 Support: @abirhasan6738"
-    )
-
-
-# =========================
-# SUPPORT
-# =========================
-
-async def support(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    await update.message.reply_text(
-        "📞 SUPPORT\n\n"
-        "Telegram: @abirhasan6738"
-    )
-
-
-# =========================
-# PROFILE
-# =========================
-
-async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    register_user(update.effective_user)
-
-    await update.message.reply_text(
-        "👤 PROFILE\n\n"
-        f"User ID: {update.effective_user.id}\n"
-        f"Username: @{update.effective_user.username or 'N/A'}"
-    )
-
-
-# =========================
-# ADMIN PANEL
-# =========================
-
-async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    if update.effective_user.id != ADMIN_ID:
-
-        await update.message.reply_text(
-            "❌ Access denied."
-        )
-
-        return
+async def withdraw_menu(query):
 
     keyboard = [
-        [
-            InlineKeyboardButton(
-                "➕ Add Product",
-                callback_data="admin_add"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "📦 Products",
-                callback_data="admin_products"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "❌ Remove Product",
-                callback_data="admin_remove"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "👥 Users",
-                callback_data="admin_users"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "💵 Deposits",
-                callback_data="admin_deposits"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "💸 Withdrawals",
-                callback_data="admin_withdrawals"
-            )
-        ],
+        [InlineKeyboardButton("📱 bKash", callback_data="wd_bkash")],
+        [InlineKeyboardButton("📱 Nagad", callback_data="wd_nagad")],
+        [InlineKeyboardButton("💳 Bybit", callback_data="wd_bybit")],
+        [InlineKeyboardButton("🪙 Binance", callback_data="wd_binance")],
     ]
 
-    await update.message.reply_text(
-        "🔐 ADMIN PANEL\n\n"
-        "Choose an option:",
+    await query.edit_message_text(
+        "💸 WITHDRAW\n\n"
+        "Choose payment method:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 
-# =========================
-# ADD PRODUCT
-# =========================
+async def withdraw_method(query, method):
 
-async def addproduct(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    labels = {
+        "bkash": "bKash Number",
+        "nagad": "Nagad Number",
+        "bybit": "Bybit UID",
+        "binance": "Binance UID"
+    }
 
-    if update.effective_user.id != ADMIN_ID:
-
-        await update.message.reply_text(
-            "❌ Access denied."
-        )
-
-        return
-
-    text = update.message.text.replace(
-        "/addproduct",
-        "",
-        1
-    ).strip()
-
-    parts = [
-        x.strip()
-        for x in text.split("|")
-    ]
-
-    if len(parts) != 4:
-
-        await update.message.reply_text(
-            "❌ Wrong format.\n\n"
-            "Use:\n"
-            "/addproduct Name | PriceUSD | Stock | Description\n\n"
-            "Example:\n"
-            "/addproduct Example Product | 5 | 10 | Digital product"
-        )
-
-        return
-
-    name = parts[0]
-
-    try:
-        price = float(parts[1])
-        stock = int(parts[2])
-    except ValueError:
-
-        await update.message.reply_text(
-            "❌ Price must be a number and stock must be a whole number."
-        )
-
-        return
-
-    description = parts[3]
-
-    if price <= 0 or stock < 0:
-
-        await update.message.reply_text(
-            "❌ Invalid price or stock."
-        )
-
-        return
-
-    con = get_db()
-    cur = con.cursor()
-
-    cur.execute(
-        """
-        INSERT INTO products
-        (name, price, stock, description)
-        VALUES (?, ?, ?, ?)
-        """,
-        (name, price, stock, description)
+    await query.edit_message_text(
+        f"💸 Withdraw via {method.title()}\n\n"
+        f"Send your {labels[method]} and amount to admin.\n\n"
+        "Admin will review the request manually."
     )
-
-    con.commit()
-    con.close()
-
-    await update.message.reply_text(
-        "✅ PRODUCT ADDED\n\n"
-        f"Name: {name}\n"
-        f"USD: ${price:.2f}\n"
-        f"BDT: ৳{price * USD_TO_BDT:.2f}\n"
-        f"Stock: {stock}"
-    )
-
-
-# =========================
-# REMOVE PRODUCT
-# =========================
-
-async def removeproduct(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    if update.effective_user.id != ADMIN_ID:
-
-        await update.message.reply_text(
-            "❌ Access denied."
-        )
-
-        return
-
-    text = update.message.text.replace(
-        "/removeproduct",
-        "",
-        1
-    ).strip()
-
-    try:
-        product_id = int(text)
-    except ValueError:
-
-        await update.message.reply_text(
-            "Use:\n"
-            "/removeproduct PRODUCT_ID"
-        )
-
-        return
-
-    con = get_db()
-    cur = con.cursor()
-
-    cur.execute(
-        "DELETE FROM products WHERE id=?",
-        (product_id,)
-    )
-
-    deleted = cur.rowcount
-
-    con.commit()
-    con.close()
-
-    if deleted:
-
-        await update.message.reply_text(
-            "✅ Product removed."
-        )
-
-    else:
-
-        await update.message.reply_text(
-            "❌ Product not found."
-        )
 
 
 # =========================
 # BUTTON HANDLER
 # =========================
 
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     query = update.callback_query
-
     await query.answer()
 
     data = query.data
 
-    # USER
+    register(query.from_user)
+
+    # USER MENU
 
     if data == "products":
+        await show_products(query)
 
-        con = get_db()
-        cur = con.cursor()
+    elif data.startswith("view_"):
 
-        cur.execute("""
-            SELECT id, name, price, stock
-            FROM products
-            WHERE stock > 0
-            ORDER BY id DESC
-        """)
+        pid = int(data.split("_")[1])
 
-        rows = cur.fetchall()
-
-        con.close()
-
-        if not rows:
-
-            await query.edit_message_text(
-                "💳 AVAILABLE PRODUCTS\n\n"
-                "No products available."
-            )
-
-            return
-
-        keyboard = []
-
-        for product_id, name, price, stock in rows:
-
-            keyboard.append([
-                InlineKeyboardButton(
-                    f"💳 {name} — ${price:.2f}",
-                    callback_data=f"product_{product_id}"
-                )
-            ])
-
-        await query.edit_message_text(
-            "💳 AVAILABLE PRODUCTS\n\n"
-            f"💱 1 USD = {USD_TO_BDT} BDT",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-
-    elif data.startswith("product_"):
-
-        product_id = int(
-            data.split("_")[1]
-        )
-
-        con = get_db()
+        con = db()
         cur = con.cursor()
 
         cur.execute(
-            """
-            SELECT name, price, stock, description
-            FROM products
-            WHERE id=?
-            """,
-            (product_id,)
+            "SELECT name,price,stock,description FROM products WHERE id=?",
+            (pid,)
         )
 
         row = cur.fetchone()
-
         con.close()
 
         if not row:
-
-            await query.edit_message_text(
-                "❌ Product not found."
-            )
-
+            await query.edit_message_text("❌ Product not found.")
             return
 
         name, price, stock, description = row
 
         await query.edit_message_text(
             f"💳 {name}\n\n"
-            f"💵 Price: ${price:.2f}\n"
-            f"🇧🇩 Price: ৳{price * USD_TO_BDT:.2f}\n"
+            f"💵 ${price:.2f}\n"
+            f"🇧🇩 ৳{price * RATE:.2f}\n"
             f"📦 Stock: {stock}\n\n"
-            f"{description}\n\n"
-            "📞 To order, contact support."
+            f"{description}",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "🛒 Order",
+                        callback_data=f"buy_{pid}"
+                    )
+                ]
+            ])
         )
+
+    elif data.startswith("buy_"):
+
+        pid = int(data.split("_")[1])
+
+        await create_order(query, pid)
 
     elif data == "balance":
 
-        con = get_db()
+        con = db()
         cur = con.cursor()
 
         cur.execute(
@@ -684,46 +493,233 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             (query.from_user.id,)
         )
 
-        row = cur.fetchone()
+        balance = cur.fetchone()[0]
 
         con.close()
 
-        amount = row[0] if row else 0
-
         await query.edit_message_text(
             "💰 MY BALANCE\n\n"
-            f"USD: ${amount:.2f}\n"
-            f"BDT: ৳{amount * USD_TO_BDT:.2f}"
+            f"USD: ${balance:.2f}\n"
+            f"BDT: ৳{balance * RATE:.2f}"
         )
 
     elif data == "orders":
 
-        await query.edit_message_text(
-            "🧾 MY ORDERS\n\n"
-            "No orders found."
-        )
+        con = db()
+        cur = con.cursor()
+
+        cur.execute("""
+            SELECT orders.id,
+                   products.name,
+                   orders.price,
+                   orders.status,
+                   orders.expires_at
+            FROM orders
+            JOIN products
+            ON products.id=orders.product_id
+            WHERE orders.user_id=?
+            ORDER BY orders.id DESC
+        """, (query.from_user.id,))
+
+        rows = cur.fetchall()
+        con.close()
+
+        if not rows:
+            await query.edit_message_text(
+                "🧾 MY ORDERS\n\nNo orders found."
+            )
+            return
+
+        import time
+
+        text = "🧾 MY ORDERS\n\n"
+
+        for oid, name, price, status, expires in rows:
+
+            if status == "Approved" and expires:
+
+                remaining = int(expires - time.time())
+
+                if remaining <= 0:
+                    status = "Expired"
+
+                else:
+                    minutes = remaining // 60
+                    seconds = remaining % 60
+
+                    status = (
+                        f"Active — "
+                        f"{minutes:02d}:{seconds:02d}"
+                    )
+
+            text += (
+                f"Order #{oid}\n"
+                f"Product: {name}\n"
+                f"Price: ${price:.2f}\n"
+                f"Status: {status}\n\n"
+            )
+
+        await query.edit_message_text(text)
 
     elif data == "deposit":
 
-        await query.edit_message_text(
-            "💵 DEPOSIT\n\n"
-            "Deposit requires admin approval.\n\n"
-            "📞 Support: @abirhasan6738"
+        await deposit_menu(query)
+
+    elif data.startswith("dep_"):
+
+        await deposit_method(
+            query,
+            data.split("_")[1]
         )
 
     elif data == "withdraw":
 
-        await query.edit_message_text(
-            "💸 WITHDRAW\n\n"
-            "Withdraw requires admin approval.\n\n"
-            "📞 Support: @abirhasan6738"
+        await withdraw_menu(query)
+
+    elif data.startswith("wd_"):
+
+        await withdraw_method(
+            query,
+            data.split("_")[1]
         )
+
+    elif data == "refund":
+
+        con = db()
+        cur = con.cursor()
+
+        cur.execute("""
+            SELECT id,price,status
+            FROM orders
+            WHERE user_id=?
+            ORDER BY id DESC
+        """, (query.from_user.id,))
+
+        rows = cur.fetchall()
+        con.close()
+
+        if not rows:
+            await query.edit_message_text(
+                "↩️ REFUND\n\nNo orders found."
+            )
+            return
+
+        keyboard = []
+
+        for oid, price, status in rows:
+
+            keyboard.append([
+                InlineKeyboardButton(
+                    f"Order #{oid} — ${price:.2f}",
+                    callback_data=f"refund_{oid}"
+                )
+            ])
+
+        await query.edit_message_text(
+            "↩️ SELECT ORDER FOR REFUND:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    elif data.startswith("refund_"):
+
+        oid = int(data.split("_")[1])
+
+        con = db()
+        cur = con.cursor()
+
+        cur.execute("""
+            SELECT price,status,refunded
+            FROM orders
+            WHERE id=? AND user_id=?
+        """, (oid, query.from_user.id))
+
+        row = cur.fetchone()
+
+        if not row:
+            con.close()
+            await query.edit_message_text(
+                "❌ Order not found."
+            )
+            return
+
+        price, status, refunded = row
+
+        if refunded:
+            con.close()
+            await query.edit_message_text(
+                "❌ This order has already been refunded."
+            )
+            return
+
+        cur.execute(
+            """
+            SELECT id FROM refunds
+            WHERE order_id=? AND status='Pending'
+            """,
+            (oid,)
+        )
+
+        if cur.fetchone():
+            con.close()
+            await query.edit_message_text(
+                "⏳ Refund request already pending."
+            )
+            return
+
+        cur.execute(
+            """
+            INSERT INTO refunds(order_id,user_id,amount)
+            VALUES(?,?,?)
+            """,
+            (oid, query.from_user.id, price)
+        )
+
+        con.commit()
+        con.close()
+
+        await query.edit_message_text(
+            f"↩️ REFUND REQUESTED\n\n"
+            f"Order ID: #{oid}\n"
+            f"Amount: ${price:.2f}\n\n"
+            "⏳ Waiting for admin decision."
+        )
+
+        try:
+            await query.bot.send_message(
+                ADMIN_ID,
+                "↩️ NEW REFUND REQUEST\n\n"
+                f"Order ID: #{oid}\n"
+                f"User ID: {query.from_user.id}\n"
+                f"Amount: ${price:.2f}",
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton(
+                            "✅ Accept",
+                            callback_data=f"raccept_{oid}"
+                        ),
+                        InlineKeyboardButton(
+                            "❌ Decline",
+                            callback_data=f"rdecline_{oid}"
+                        )
+                    ]
+                ])
+            )
+        except Exception:
+            pass
 
     elif data == "support":
 
         await query.edit_message_text(
             "📞 SUPPORT\n\n"
-            "Telegram: @abirhasan6738"
+            "Contact us:",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "💬 Telegram Support",
+                        url=SUPPORT
+                    )
+                ]
+            ])
         )
 
     elif data == "profile":
@@ -736,177 +732,135 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ADMIN
 
-    elif data.startswith("admin_"):
+    elif data.startswith("approve_"):
 
         if query.from_user.id != ADMIN_ID:
-
-            await query.edit_message_text(
-                "❌ Access denied."
-            )
-
             return
 
-        if data == "admin_add":
+        oid = int(data.split("_")[1])
 
-            await query.edit_message_text(
-                "➕ ADD PRODUCT\n\n"
-                "Use this command:\n\n"
-                "/addproduct Name | PriceUSD | Stock | Description\n\n"
-                "Example:\n"
-                "/addproduct Example Product | 5 | 10 | Digital product"
-            )
+        context.user_data["approve_order"] = oid
 
-        elif data == "admin_products":
+        await query.edit_message_text(
+            f"✅ Order #{oid} selected.\n\n"
+            "Now send the product details/custom text."
+        )
 
-            con = get_db()
-            cur = con.cursor()
+    elif data.startswith("decline_"):
 
-            cur.execute(
-                """
-                SELECT id, name, price, stock
-                FROM products
-                ORDER BY id DESC
-                """
-            )
+        if query.from_user.id != ADMIN_ID:
+            return
 
-            rows = cur.fetchall()
+        oid = int(data.split("_")[1])
 
+        con = db()
+        cur = con.cursor()
+
+        cur.execute(
+            "UPDATE orders SET status='Declined' WHERE id=?",
+            (oid,)
+        )
+
+        con.commit()
+        con.close()
+
+        await query.edit_message_text(
+            f"❌ Order #{oid} declined."
+        )
+
+    elif data.startswith("raccept_"):
+
+        if query.from_user.id != ADMIN_ID:
+            return
+
+        oid = int(data.split("_")[1])
+
+        con = db()
+        cur = con.cursor()
+
+        cur.execute(
+            """
+            SELECT user_id,amount
+            FROM refunds
+            WHERE order_id=? AND status='Pending'
+            """,
+            (oid,)
+        )
+
+        row = cur.fetchone()
+
+        if not row:
             con.close()
-
-            if not rows:
-
-                await query.edit_message_text(
-                    "📦 PRODUCTS\n\n"
-                    "No products."
-                )
-
-                return
-
-            text = "📦 PRODUCTS\n\n"
-
-            for pid, name, price, stock in rows:
-
-                text += (
-                    f"ID: {pid}\n"
-                    f"Name: {name}\n"
-                    f"Price: ${price:.2f}\n"
-                    f"Stock: {stock}\n\n"
-                )
-
-            await query.edit_message_text(text)
-
-        elif data == "admin_remove":
-
             await query.edit_message_text(
-                "❌ REMOVE PRODUCT\n\n"
-                "Use:\n"
-                "/removeproduct PRODUCT_ID"
+                "❌ Refund request not found."
             )
+            return
 
-        elif data == "admin_users":
+        uid, amount = row
 
-            con = get_db()
-            cur = con.cursor()
+        cur.execute(
+            """
+            UPDATE users
+            SET balance=balance+?
+            WHERE user_id=?
+            """,
+            (amount, uid)
+        )
 
-            cur.execute(
-                "SELECT COUNT(*) FROM users"
+        cur.execute(
+            """
+            UPDATE refunds
+            SET status='Accepted'
+            WHERE order_id=? AND status='Pending'
+            """,
+            (oid,)
+        )
+
+        cur.execute(
+            """
+            UPDATE orders
+            SET refunded=1,status='Refunded'
+            WHERE id=?
+            """,
+            (oid,)
+        )
+
+        con.commit()
+        con.close()
+
+        await query.edit_message_text(
+            f"✅ Refund #{oid} accepted.\n"
+            f"Amount: ${amount:.2f}"
+        )
+
+        try:
+            await query.bot.send_message(
+                uid,
+                f"✅ REFUND ACCEPTED\n\n"
+                f"Order ID: #{oid}\n"
+                f"Refund: ${amount:.2f}\n\n"
+                "Your balance has been updated."
             )
+        except Exception:
+            pass
 
-            count = cur.fetchone()[0]
+    elif data.startswith("rdecline_"):
 
-            con.close()
+        if query.from_user.id != ADMIN_ID:
+            return
 
-            await query.edit_message_text(
-                f"👥 USERS\n\n"
-                f"Total users: {count}"
-            )
+        oid = int(data.split("_")[1])
 
-        elif data == "admin_deposits":
+        con = db()
+        cur = con.cursor()
 
-            await query.edit_message_text(
-                "💵 DEPOSITS\n\n"
-                "No pending deposits."
-            )
+        cur.execute(
+            """
+            UPDATE refunds
+            SET status='Declined'
+            WHERE order_id=? AND status='Pending'
+            """,
+            (oid,)
+        )
 
-        elif data == "admin_withdrawals":
-
-            await query.edit_message_text(
-                "💸 WITHDRAWALS\n\n"
-                "No pending withdrawals."
-            )
-
-
-# =========================
-# START BOT
-# =========================
-
-def main():
-
-    setup_database()
-
-    threading.Thread(
-        target=run_web_server,
-        daemon=True
-    ).start()
-
-    app = (
-        Application
-        .builder()
-        .token(TOKEN)
-        .build()
-    )
-
-    # User commands
-    app.add_handler(
-        CommandHandler("start", start)
-    )
-
-    app.add_handler(
-        CommandHandler("balance", balance)
-    )
-
-    app.add_handler(
-        CommandHandler("orders", orders)
-    )
-
-    app.add_handler(
-        CommandHandler("deposit", deposit)
-    )
-
-    app.add_handler(
-        CommandHandler("withdraw", withdraw)
-    )
-
-    app.add_handler(
-        CommandHandler("support", support)
-    )
-
-    app.add_handler(
-        CommandHandler("profile", profile)
-    )
-
-    # Admin commands
-    app.add_handler(
-        CommandHandler("admin", admin)
-    )
-
-    app.add_handler(
-        CommandHandler("addproduct", addproduct)
-    )
-
-    app.add_handler(
-        CommandHandler("removeproduct", removeproduct)
-    )
-
-    # Buttons
-    app.add_handler(
-        CallbackQueryHandler(button)
-    )
-
-    print("BOT CARD is running...")
-
-    app.run_polling()
-
-
-if __name__ == "__main__":
-    main()
+        con.c
