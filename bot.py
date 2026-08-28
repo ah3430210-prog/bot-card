@@ -451,6 +451,23 @@ async def withdraw_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Deduct balance immediately for safety
     db_query("UPDATE users SET balance = balance - ? WHERE user_id = ?", (amt, user_id), commit=True)
-    created_at = datetime.now().strftime("%Y-%m-%d %H:%M")
-    db_query("INSERT INTO withdraws (user_id, method, amount, account_info, status, created_at) VALUES (?, ?, ?, ?, ?, ?)",
- 
+        created_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    db_query(
+        "INSERT INTO withdraws "
+        "(user_id, method, amount, account_info, status, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (user_id, method, amt, info, "Pending", created_at),
+        commit=True
+    )
+
+    await update.message.reply_text(
+        "✅ Withdrawal Request Submitted!\n\n"
+        f"💳 Method: {method}\n"
+        f"💵 Amount: ${amt:.2f}\n"
+        f"📌 Status: Pending\n\n"
+        "⏳ Waiting for admin approval."
+    )
+
+    context.user_data.clear()
+    return ConversationHandler.END
