@@ -8,6 +8,8 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 TOKEN = os.environ["BOT_TOKEN"]
 PORT = int(os.environ.get("PORT", 10000))
 
+USD_TO_BDT = 125
+
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -26,6 +28,8 @@ def run_health_server():
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
+        [InlineKeyboardButton("💳 Buy Bot Card", callback_data="buy")],
+        [InlineKeyboardButton("💵 Deposit", callback_data="deposit")],
         [InlineKeyboardButton("💰 My Balance", callback_data="balance")],
         [InlineKeyboardButton("🧾 My Orders", callback_data="orders")],
         [InlineKeyboardButton("📞 Support", callback_data="support")],
@@ -35,7 +39,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "💳 BOT CARD\n\n"
         "Welcome to BOT CARD!\n"
-        "👤 BY ABIR",
+        "👤 BY ABIR\n\n"
+        "💱 Rate: 1 USD = 125 BDT\n\n"
+        "Choose an option:",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
@@ -44,14 +50,36 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    if query.data == "balance":
-        text = "💰 My Balance\n\nBalance: 0.00 USD"
+    if query.data == "buy":
+        text = (
+            "💳 Buy Bot Card\n\n"
+            "Available cards will appear here.\n\n"
+            "💱 Rate: 1 USD = 125 BDT"
+        )
+
+    elif query.data == "deposit":
+        text = (
+            "💵 Deposit\n\n"
+            "Manual payment system will be added here.\n\n"
+            "💱 Rate: 1 USD = 125 BDT"
+        )
+
+    elif query.data == "balance":
+        text = (
+            "💰 My Balance\n\n"
+            "Balance: 0.00 USD\n"
+            "≈ 0.00 BDT"
+        )
+
     elif query.data == "orders":
         text = "🧾 My Orders\n\nNo orders found."
+
     elif query.data == "support":
         text = "📞 Support\n\nTelegram: @abirhasan6738"
+
     elif query.data == "profile":
         text = f"👤 Profile\n\nUser ID: {query.from_user.id}"
+
     else:
         text = "💳 BOT CARD"
 
